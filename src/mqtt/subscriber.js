@@ -6,6 +6,8 @@
  *   zigbee2mqtt/<friendly_name>  →  SNZB-02P, Innr, Heiman HS3AQ
  *   zigbee2mqtt/bridge/state     →  sante du bridge
  *   zigbee2mqtt/bridge/devices   →  liste des devices (discovery)
+ *   zigbee2mqtt/bridge/info      →  version, appairage ouvert ou non
+ *   zigbee2mqtt/bridge/event     →  appareil rejoint / interview
  */
 
 'use strict';
@@ -22,6 +24,13 @@ let _deviceList = [];
 // du reseau Zigbee pour reperer un capteur appaire mais non declare.
 const _activity = {};
 
+// Etat du bridge pour l'appairage a distance : { version, permit_join,
+// permit_join_end (ISO) } et derniers evenements de jonction.
+let _bridge = { version: null, permit_join: false, permit_join_end: null };
+const _joinEvents = [];
+const MAX_JOIN_EVENTS = 20;
+let _pendingPermitJoin = null;
+
 // Cache anti-doublons : stocke le dernier {value, timestamp} par capteur/prise
 const _lastValues = {};
 
@@ -33,6 +42,66 @@ function getDevices() {
 
 function getActivity() {
   return _activity;
+}
+
+function getBridge() {
+  // L'echeance peut etre passee si bridge/info n'a pas ete republie
+  const expired = _bridge.permit_join_end && new Date(_bridge.permit_join_end) < new Date();
+  return { ..._bridge, permit_join: _bridge.permit_join && !expired, events: _joinEvents };
+}
+
+// Ouvre (seconds > 0) ou ferme (0) l'appairage. Le payload porte value
+// et time pour fonctionner avec zigbee2mqtt 1.x comme 2.x. Resout avec
+// la reponse du bridge, ou { status: 'timeout' } apres 5 s.
+function permitJoin(seconds) {
+  if (!client || !client.connected) {
+    return Promise.resolve({ status: 'error', error: 'MQTT non connecte' });
+  }
+  if (_pendingPermitJoin) _pendingPermitJoin({ status: 'superseded' });
+  // Nouvelle session d'appairage : on ne montre que ses evenements
+  if (seconds > 0) _joinEvents.length = 0;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => done({ status: 'timeout' }), 5000);
+    function done(res) {
+      clearTimeout(timer);
+      if (_pendingPermitJoin === done) _pendingPermitJoin = null;
+      // bridge/info suit normalement et corrige l'echeance si besoin
+      if (res.status === 'ok') {
+        _bridge = {
+          ..._bridge,
+          permit_join: seconds > 0,
+          permit_join_end: seconds > 0 ? new Date(Date.now() + seconds * 1000).toISOString() : null,
+        };
+      }
+      resolve(res);
+    }
+    _pendingPermitJoin = done;
+    client.publish('zigbee2mqtt/bridge/request/permit_join',
+      JSON.stringify({ value: seconds > 0, time: seconds }));
+  });
+}
+
+function handleBridgeInfo(info) {
+  let end = null;
+  if (info.permit_join_end) end = new Date(info.permit_join_end).toISOString();                 // 2.x
+  else if (info.permit_join_timeout) end = new Date(Date.now() + info.permit_join_timeout * 1000).toISOString(); // 1.x
+  _bridge = { version: info.version || _bridge.version, permit_join: !!info.permit_join, permit_join_end: info.permit_join ? end : null };
+}
+
+function handleBridgeEvent(evt) {
+  const { type, data = {} } = evt;
+  if (type !== 'device_joined' && type !== 'device_interview' && type !== 'device_announce') return;
+  _joinEvents.unshift({
+    ts: new Date().toISOString(),
+    type,
+    status: data.status || null,
+    friendly_name: data.friendly_name || null,
+    ieee_address: data.ieee_address || null,
+    model: data.definition?.model || null,
+    vendor: data.definition?.vendor || null,
+  });
+  _joinEvents.length = Math.min(_joinEvents.length, MAX_JOIN_EVENTS);
+  if (type === 'device_interview' && data.status === 'successful') requestDevices();
 }
 
 function requestDevices() {
@@ -183,6 +252,18 @@ function start() {
       return;
     }
 
+    // Appairage : etat, evenements, reponse a nos demandes
+    if (topic === 'zigbee2mqtt/bridge/info' || topic === 'zigbee2mqtt/bridge/event'
+        || topic === 'zigbee2mqtt/bridge/response/permit_join') {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (topic.endsWith('/info')) handleBridgeInfo(msg);
+        else if (topic.endsWith('/event')) handleBridgeEvent(msg);
+        else if (_pendingPermitJoin) _pendingPermitJoin({ status: msg.status, error: msg.error || null });
+      } catch { /* ignore */ }
+      return;
+    }
+
     // Ignore les autres topics bridge
     if (topic.startsWith('zigbee2mqtt/bridge/')) return;
 
@@ -242,4 +323,6 @@ function stop() {
 
 function getClient() { return client; }
 
-module.exports = { start, stop, getClient, getDevices, getActivity, requestDevices };
+module.exports = {
+  start, stop, getClient, getDevices, getActivity, getBridge, permitJoin, requestDevices,
+};

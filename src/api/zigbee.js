@@ -7,7 +7,9 @@
 'use strict';
 const { Router } = require('express');
 const { getDb, getActiveCampaign } = require('../db');
-const { getDevices, getActivity, requestDevices } = require('../mqtt/subscriber');
+const {
+  getDevices, getActivity, getBridge, permitJoin, requestDevices,
+} = require('../mqtt/subscriber');
 
 const router = Router();
 
@@ -151,8 +153,22 @@ router.get('/overview', (req, res) => {
     silent_after_min: SILENT_AFTER_MIN,
     backend_uptime_s: Math.round(process.uptime()),
     counts,
+    bridge: getBridge(),
     devices: result,
   });
+});
+
+// POST /permit-join { seconds } — ouvre l'appairage a distance pour qu'une
+// personne sur place appuie sur le bouton du capteur. seconds = 0 ferme.
+const MAX_PERMIT_JOIN_S = 254;
+router.post('/permit-join', async (req, res) => {
+  const seconds = Math.max(0, Math.min(MAX_PERMIT_JOIN_S, parseInt(req.body?.seconds, 10) || 0));
+  const result = await permitJoin(seconds);
+  if (result.status === 'ok') return res.json({ ok: true, seconds, bridge: getBridge() });
+  if (result.status === 'timeout') {
+    return res.status(504).json({ error: "zigbee2mqtt n'a pas repondu. Est-il demarre ?" });
+  }
+  res.status(502).json({ error: result.error || "zigbee2mqtt a refuse la demande d'appairage" });
 });
 
 // POST /devices/refresh — demander une mise a jour de la liste
