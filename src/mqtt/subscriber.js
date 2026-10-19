@@ -17,6 +17,11 @@ let _activeCampaign = null;
 let _campaignCheckTimer = null;
 let _deviceList = [];
 
+// Activite par appareil (friendly_name), campagne ou pas :
+// { last_seen, linkquality, battery, availability }. Sert a l'apercu
+// du reseau Zigbee pour reperer un capteur appaire mais non declare.
+const _activity = {};
+
 // Cache anti-doublons : stocke le dernier {value, timestamp} par capteur/prise
 const _lastValues = {};
 
@@ -24,6 +29,10 @@ const _lastValues = {};
 
 function getDevices() {
   return _deviceList;
+}
+
+function getActivity() {
+  return _activity;
 }
 
 function requestDevices() {
@@ -177,10 +186,20 @@ function start() {
     // Ignore les autres topics bridge
     if (topic.startsWith('zigbee2mqtt/bridge/')) return;
 
-    // Pas de campagne active → on ne stocke rien
-    if (!_activeCampaign || _activeCampaign.status !== 'active') return;
-
     const friendlyName = topic.replace('zigbee2mqtt/', '');
+
+    // Disponibilite (si activee dans zigbee2mqtt) : "online" | {"state":"online"}
+    if (friendlyName.endsWith('/availability')) {
+      const name = friendlyName.slice(0, -'/availability'.length);
+      const txt = raw.toString();
+      let state = txt;
+      try { state = JSON.parse(txt).state ?? txt; } catch { /* texte brut */ }
+      _activity[name] = { ..._activity[name], availability: state };
+      return;
+    }
+
+    // Nos propres requetes /get et /set reviennent par l'abonnement '#'
+    if (/\/(get|set)(\/.*)?$/.test(friendlyName)) return;
 
     let payload;
     try {
@@ -188,6 +207,17 @@ function start() {
     } catch {
       return;
     }
+    if (!payload || typeof payload !== 'object') return;
+
+    _activity[friendlyName] = {
+      ..._activity[friendlyName],
+      last_seen: new Date().toISOString(),
+      linkquality: payload.linkquality ?? _activity[friendlyName]?.linkquality ?? null,
+      battery: payload.battery ?? _activity[friendlyName]?.battery ?? null,
+    };
+
+    // Pas de campagne active → on ne stocke rien
+    if (!_activeCampaign || _activeCampaign.status !== 'active') return;
 
     try {
       route(db, friendlyName, payload, _activeCampaign.id);
@@ -212,4 +242,4 @@ function stop() {
 
 function getClient() { return client; }
 
-module.exports = { start, stop, getClient, getDevices, requestDevices };
+module.exports = { start, stop, getClient, getDevices, getActivity, requestDevices };
