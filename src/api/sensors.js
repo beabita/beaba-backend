@@ -7,8 +7,72 @@
 const { Router } = require('express');
 const { getDb } = require('../db');
 const weather = require('../lib/weather');
+const { getDevices } = require('../mqtt/subscriber');
 
 const router = Router();
+
+// Au-dela de ce delai sans releve, un capteur est considere muet.
+const SILENT_AFTER_MIN = 60;
+
+/**
+ * Etat des capteurs d'ambiance d'une campagne : liste les problemes qui
+ * feraient sortir un rapport sans CO2 ou sans confort.
+ * Chaque probleme : { level: 'error'|'warning', code, sensor?, message }.
+ */
+function sensorHealth(db, campaignId) {
+  const issues = [];
+  const devices = getDevices();
+  const paired = new Set(devices.map((d) => d.friendly_name));
+
+  const lastTs = (table) => db.prepare(`
+    SELECT s.id, s.name, s.friendly_name, s.room_id,
+           (SELECT MAX(r.ts) FROM ${table} r WHERE r.sensor_id = s.id) AS last_ts,
+           (SELECT MAX(r.ts) FROM ${table} r WHERE r.sensor_id = s.id)
+             >= datetime('now', '-${SILENT_AFTER_MIN} minutes') AS recent
+    FROM ${table === 'readings_co2' ? 'co2_sensors' : 'temp_sensors'} s
+    WHERE s.campaign_id = ?
+  `).all(campaignId);
+
+  const co2 = lastTs('readings_co2');
+  const temp = lastTs('readings_temp');
+
+  if (co2.length === 0) {
+    issues.push({
+      level: 'error', code: 'co2_missing',
+      message: "Aucun capteur CO2 dans cette campagne. Verifiez qu'il est appaire dans zigbee2mqtt (bouton reset 5 s) puis declarez-le.",
+    });
+  }
+
+  co2.forEach((s) => {
+    if (devices.length > 0 && !paired.has(s.friendly_name)) {
+      issues.push({ level: 'error', code: 'co2_unpaired', sensor: s.name,
+        message: `Le capteur CO2 "${s.name}" n'est plus appaire au reseau Zigbee.` });
+    } else if (!s.recent) {
+      issues.push({ level: 'error', code: 'co2_silent', sensor: s.name,
+        message: s.last_ts
+          ? `Le capteur CO2 "${s.name}" n'envoie plus rien depuis ${s.last_ts} UTC.`
+          : `Le capteur CO2 "${s.name}" n'a encore envoye aucune mesure.` });
+    }
+    if (!s.room_id) {
+      issues.push({ level: 'warning', code: 'co2_no_room', sensor: s.name,
+        message: `Le capteur CO2 "${s.name}" n'est affecte a aucune piece.` });
+    }
+  });
+
+  temp.forEach((s) => {
+    if (!s.recent) {
+      issues.push({ level: 'warning', code: 'temp_silent', sensor: s.name,
+        message: `La sonde "${s.name}" n'envoie plus rien depuis ${s.last_ts ? `${s.last_ts} UTC` : 'le debut'}.` });
+    }
+  });
+
+  return { ok: !issues.some((i) => i.level === 'error'), issues };
+}
+
+// GET /health — problemes de capteurs de la campagne active
+router.get('/health', (req, res) => {
+  res.json(sensorHealth(getDb(), req.campaign.id));
+});
 
 // ── Capteurs temperature ─────────────────────────────────────────────
 
@@ -195,3 +259,4 @@ router.post('/co2/:id/calibration/reset', (req, res) => {
 });
 
 module.exports = router;
+module.exports.sensorHealth = sensorHealth;

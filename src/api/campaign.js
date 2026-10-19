@@ -8,6 +8,7 @@ const { Router } = require('express');
 const crypto = require('crypto');
 const { getDb, getActiveCampaign } = require('../db');
 const { runMigration } = require('../db/migrate');
+const { sensorHealth } = require('./sensors');
 
 const router = Router();
 
@@ -101,7 +102,12 @@ router.post('/:id/activate', (req, res) => {
   });
 
   db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaignId);
-  res.json({ ok: true });
+
+  // Avant activation aucun releve n'est stocke : on ne remonte que les
+  // problemes de declaration/appairage, pas les capteurs « muets ».
+  const warnings = sensorHealth(db, campaignId).issues
+    .filter((i) => !i.code.endsWith('_silent'));
+  res.json({ ok: true, warnings });
 });
 
 // POST /:id/complete — terminer une campagne

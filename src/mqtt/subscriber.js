@@ -86,20 +86,42 @@ function handlePlug(db, plugId, campaignId, payload) {
   `).run(plugId, campaignId, power, energy ?? null);
 }
 
+// Cree un capteur CO2 (sans piece) pour un device qui publie du CO2 sans
+// avoir ete declare. L'id reprend l'adresse IEEE comme dans le SetupWizard,
+// sauf si elle est deja prise par une autre campagne : on ne la deplace pas
+// pour ne pas orpheliner les releves de cette campagne-la.
+function autoRegisterCo2Sensor(db, friendlyName, campaignId) {
+  const device = _deviceList.find((d) => d.friendly_name === friendlyName);
+  let id = device?.ieee_address || friendlyName;
+  const taken = db.prepare('SELECT campaign_id FROM co2_sensors WHERE id = ?').get(id);
+  if (taken && taken.campaign_id !== campaignId) id = `${id}_${campaignId.slice(0, 8)}`;
+
+  db.prepare(`
+    INSERT OR IGNORE INTO co2_sensors (id, campaign_id, room_id, name, friendly_name, comment)
+    VALUES (?, ?, NULL, ?, ?, ?)
+  `).run(id, campaignId, friendlyName, friendlyName, 'Ajoute automatiquement (non declare au setup)');
+
+  console.warn(`[MQTT] Capteur CO2 "${friendlyName}" non declare : cree automatiquement (${id}), a affecter a une piece`);
+  return db.prepare('SELECT id FROM co2_sensors WHERE friendly_name = ? AND campaign_id = ?').get(friendlyName, campaignId);
+}
+
 // ── Routage par friendly_name ─────────────────────────────────────────
 
 function route(db, friendlyName, payload, campaignId) {
+  // Tout message portant du CO2 va vers un capteur CO2, declare ou non :
+  // un capteur oublie au setup ne doit plus faire perdre la campagne.
+  if (payload.co2 != null) {
+    const co2Sensor = db.prepare(
+      'SELECT id FROM co2_sensors WHERE friendly_name = ? AND campaign_id = ?'
+    ).get(friendlyName, campaignId) || autoRegisterCo2Sensor(db, friendlyName, campaignId);
+    return handleCo2Sensor(db, co2Sensor.id, campaignId, payload);
+  }
+
   // Capteurs temperature
   const tempSensor = db.prepare(
     'SELECT id FROM temp_sensors WHERE friendly_name = ? AND campaign_id = ?'
   ).get(friendlyName, campaignId);
   if (tempSensor) return handleTempSensor(db, tempSensor.id, campaignId, payload);
-
-  // Capteur CO2
-  const co2Sensor = db.prepare(
-    'SELECT id FROM co2_sensors WHERE friendly_name = ? AND campaign_id = ?'
-  ).get(friendlyName, campaignId);
-  if (co2Sensor) return handleCo2Sensor(db, co2Sensor.id, campaignId, payload);
 
   // Prises Innr
   const plug = db.prepare(

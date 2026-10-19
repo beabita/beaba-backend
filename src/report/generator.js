@@ -40,8 +40,11 @@ function generateReport(campaignId) {
   // ── Confort ─────────────────────────────────────────────────────────
   const comfort = computeComfort(db, campaignId);
 
+  // ── Qualite d'air (CO2) ─────────────────────────────────────────────
+  const airQuality = computeAirQuality(db, campaignId);
+
   // ── Recommandations ─────────────────────────────────────────────────
-  const recommendations = generateRecommendations(topConsumers, standby, comfort, energy);
+  const recommendations = generateRecommendations(topConsumers, standby, comfort, energy, airQuality);
 
   return {
     campaign: {
@@ -58,6 +61,7 @@ function generateReport(campaignId) {
     top_consumers: topConsumers,
     standby,
     comfort,
+    air_quality: airQuality,
     recommendations,
   };
 }
@@ -341,10 +345,78 @@ function computeComfort(db, campaignId) {
   });
 }
 
+// Seuils CO2 alignes sur le dashboard (SensorList) : < 800 bon, 800-1200 moyen.
+const CO2_GOOD = 800;
+const CO2_BAD = 1200;
+
+/**
+ * Analyse le CO2 par capteur (offset de calibration applique).
+ * Les capteurs sans piece sont inclus : leurs releves ne doivent pas
+ * disparaitre du rapport. `missing` signale une campagne sans aucun releve.
+ */
+function computeAirQuality(db, campaignId) {
+  const sensors = db.prepare(`
+    SELECT s.id AS sensor_id, s.name AS sensor_name, s.room_id,
+      s.calibration_offset_ppm AS offset,
+      r.name AS room_name, r.color, r.sort_order,
+      COUNT(rc.id) AS total,
+      AVG(rc.co2_ppm + s.calibration_offset_ppm) AS avg_co2,
+      MAX(rc.co2_ppm + s.calibration_offset_ppm) AS max_co2,
+      SUM(CASE WHEN rc.co2_ppm + s.calibration_offset_ppm >= ${CO2_GOOD} THEN 1 ELSE 0 END) AS over_good,
+      SUM(CASE WHEN rc.co2_ppm + s.calibration_offset_ppm >= ${CO2_BAD} THEN 1 ELSE 0 END) AS over_bad
+    FROM co2_sensors s
+    LEFT JOIN rooms r ON r.id = s.room_id
+    LEFT JOIN readings_co2 rc ON rc.sensor_id = s.id AND rc.campaign_id = s.campaign_id
+    WHERE s.campaign_id = ?
+    GROUP BY s.id
+    ORDER BY r.sort_order IS NULL, r.sort_order, r.name, s.name
+  `).all(campaignId);
+
+  const rows = sensors.filter(s => s.total > 0).map(s => {
+    const pctOverGood = Math.round(s.over_good / s.total * 100);
+    const pctOverBad = Math.round(s.over_bad / s.total * 100);
+    let status = 'good';
+    if (pctOverBad > 10) status = 'bad';
+    else if (pctOverGood > 25) status = 'warning';
+
+    const daily = db.prepare(`
+      SELECT date(rc.ts) AS date, AVG(rc.co2_ppm) AS avg_co2, MAX(rc.co2_ppm) AS max_co2
+      FROM readings_co2 rc
+      WHERE rc.sensor_id = ? AND rc.campaign_id = ?
+      GROUP BY date(rc.ts)
+      ORDER BY date(rc.ts)
+    `).all(s.sensor_id, campaignId);
+
+    return {
+      sensor_id: s.sensor_id,
+      sensor_name: s.sensor_name,
+      room_id: s.room_id,
+      room_name: s.room_name || 'Piece non renseignee',
+      color: s.color,
+      avg_co2: Math.round(s.avg_co2),
+      max_co2: Math.round(s.max_co2),
+      pct_over_800: pctOverGood,
+      pct_over_1200: pctOverBad,
+      status,
+      daily_co2_series: daily.map(d => ({
+        date: d.date,
+        avg_co2: Math.round(d.avg_co2 + (s.offset || 0)),
+        max_co2: Math.round(d.max_co2 + (s.offset || 0)),
+      })),
+    };
+  });
+
+  return {
+    missing: rows.length === 0,
+    silent_sensors: sensors.filter(s => s.total === 0).map(s => s.sensor_name),
+    rooms: rows,
+  };
+}
+
 /**
  * Genere des recommandations automatiques en francais.
  */
-function generateRecommendations(topConsumers, standby, comfort, energy) {
+function generateRecommendations(topConsumers, standby, comfort, energy, airQuality) {
   const tips = [];
 
   // Veille
@@ -387,6 +459,15 @@ function generateRecommendations(topConsumers, standby, comfort, energy) {
     tips.push(
       `L'humidite dans ${humidRooms.map(r => `"${r.room_name}"`).join(', ')} est elevee. ` +
       `Aerez regulierement ou utilisez un deshumidificateur.`
+    );
+  }
+
+  // Qualite d'air
+  const stuffyRooms = (airQuality?.rooms || []).filter(r => r.status !== 'good');
+  if (stuffyRooms.length > 0) {
+    tips.push(
+      `Le CO2 depasse souvent ${CO2_GOOD} ppm dans ${stuffyRooms.map(r => `"${r.room_name}"`).join(', ')}. ` +
+      `Aerez 5 a 10 minutes plusieurs fois par jour et verifiez les grilles de ventilation.`
     );
   }
 
