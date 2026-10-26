@@ -13,7 +13,7 @@ const router = Router();
 // GET / — lister tous les utilisateurs
 router.get('/', (req, res) => {
   const db = getDb();
-  const users = db.prepare('SELECT id, email, name, role, created_at, active FROM users ORDER BY created_at').all();
+  const users = db.prepare('SELECT id, email, name, role, can_pair, created_at, active FROM users ORDER BY created_at').all();
   res.json(users);
 });
 
@@ -34,7 +34,7 @@ router.post('/', (req, res) => {
 
 // PUT /:id — modifier un utilisateur
 router.put('/:id', (req, res) => {
-  const { name, email, active } = req.body;
+  const { name, email, active, can_pair } = req.body;
   const db = getDb();
 
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
@@ -42,11 +42,17 @@ router.put('/:id', (req, res) => {
 
   db.prepare(`
     UPDATE users SET
-      name   = COALESCE(?, name),
-      email  = COALESCE(?, email),
-      active = COALESCE(?, active)
+      name     = COALESCE(?, name),
+      email    = COALESCE(?, email),
+      active   = COALESCE(?, active),
+      can_pair = COALESCE(?, can_pair)
     WHERE id = ?
-  `).run(name, email, active != null ? (active ? 1 : 0) : null, req.params.id);
+  `).run(
+    name, email,
+    active != null ? (active ? 1 : 0) : null,
+    can_pair != null ? (can_pair ? 1 : 0) : null,
+    req.params.id
+  );
 
   res.json({ ok: true });
 });

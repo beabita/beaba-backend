@@ -248,6 +248,12 @@ function runMigration(database) {
     database.exec("ALTER TABLE co2_sensors ADD COLUMN calibration_ref_ppm REAL");
   }
 
+  // Droit d'appairage Zigbee pour les conseillers (les admins l'ont d'office).
+  const userCols = database.prepare("PRAGMA table_info(users)").all();
+  if (!userCols.some((c) => c.name === 'can_pair')) {
+    database.exec("ALTER TABLE users ADD COLUMN can_pair INTEGER NOT NULL DEFAULT 0");
+  }
+
   // Seed admin user
   database.prepare(`
     INSERT OR IGNORE INTO users (id, email, name, role) VALUES ('admin-001', 'benoit@450ppm.be', 'Benoit', 'admin')

@@ -7,6 +7,7 @@
 'use strict';
 const { Router } = require('express');
 const { getDb, getActiveCampaign } = require('../db');
+const { requirePairing } = require('./middleware');
 const {
   getDevices, getActivity, getBridge, permitJoin, requestDevices,
 } = require('../mqtt/subscriber');
@@ -161,7 +162,7 @@ router.get('/overview', (req, res) => {
 // POST /permit-join { seconds } — ouvre l'appairage a distance pour qu'une
 // personne sur place appuie sur le bouton du capteur. seconds = 0 ferme.
 const MAX_PERMIT_JOIN_S = 254;
-router.post('/permit-join', async (req, res) => {
+router.post('/permit-join', requirePairing, async (req, res) => {
   const seconds = Math.max(0, Math.min(MAX_PERMIT_JOIN_S, parseInt(req.body?.seconds, 10) || 0));
   const result = await permitJoin(seconds);
   if (result.status === 'ok') return res.json({ ok: true, seconds, bridge: getBridge() });
