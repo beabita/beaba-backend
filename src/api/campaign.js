@@ -8,6 +8,7 @@ const { Router } = require('express');
 const crypto = require('crypto');
 const { getDb, getActiveCampaign } = require('../db');
 const { runMigration } = require('../db/migrate');
+const { purgeCampaign } = require('../db/purge');
 const { sensorHealth } = require('./sensors');
 
 const router = Router();
@@ -150,9 +151,9 @@ router.post('/:id/complete', (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /:id — effacer une campagne terminee pour en demarrer une nouvelle.
-// Ouvert au proprietaire (conseiller) ; exige que l'archive ait ete
-// telechargee entierement apres la cloture.
+// DELETE /:id — effacer une campagne terminee pour en demarrer une nouvelle
+// (RGPD : rien ne reste sur le Pi). Ouvert au proprietaire (conseiller) ;
+// exige que l'archive ait ete telechargee entierement apres la cloture.
 router.delete('/:id', (req, res) => {
   const db = getDb();
   const campaignId = req.params.id;
@@ -169,16 +170,12 @@ router.delete('/:id', (req, res) => {
     return res.status(409).json({ error: "Telechargez l'archive complete avant d'effacer la campagne" });
   }
 
-  db.transaction(() => {
-    db.prepare('DELETE FROM plug_appliances WHERE plug_id IN (SELECT id FROM plugs WHERE campaign_id = ?)').run(campaignId);
-    for (const t of [
-      'readings_temp', 'readings_co2', 'readings_power', 'readings_pipe_temp', 'meter_readings',
-      'plugs', 'temp_sensors', 'co2_sensors', 'pipe_sensors', 'rooms',
-    ]) {
-      db.prepare(`DELETE FROM ${t} WHERE campaign_id = ?`).run(campaignId);
-    }
-    db.prepare('DELETE FROM campaigns WHERE id = ?').run(campaignId);
-  })();
+  try {
+    purgeCampaign(db, campaignId);
+  } catch (err) {
+    console.error('[Campaign] Effacement impossible :', campaignId, err.message);
+    return res.status(500).json({ error: `Effacement impossible : ${err.message}` });
+  }
 
   res.json({ ok: true });
 });
