@@ -150,6 +150,39 @@ router.post('/:id/complete', (req, res) => {
   res.json({ ok: true });
 });
 
+// DELETE /:id — effacer une campagne terminee pour en demarrer une nouvelle.
+// Ouvert au proprietaire (conseiller) ; exige que l'archive ait ete
+// telechargee entierement apres la cloture.
+router.delete('/:id', (req, res) => {
+  const db = getDb();
+  const campaignId = req.params.id;
+
+  const campaign = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
+  if (!campaign) return res.status(404).json({ error: 'Campagne introuvable' });
+  if (req.user.role !== 'admin' && campaign.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'Acces interdit' });
+  }
+  if (campaign.status !== 'completed') {
+    return res.status(400).json({ error: 'Seule une campagne terminee peut etre effacee' });
+  }
+  if (!campaign.archived_at || campaign.archived_at < campaign.completed_at) {
+    return res.status(409).json({ error: "Telechargez l'archive complete avant d'effacer la campagne" });
+  }
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM plug_appliances WHERE plug_id IN (SELECT id FROM plugs WHERE campaign_id = ?)').run(campaignId);
+    for (const t of [
+      'readings_temp', 'readings_co2', 'readings_power', 'readings_pipe_temp', 'meter_readings',
+      'plugs', 'temp_sensors', 'co2_sensors', 'pipe_sensors', 'rooms',
+    ]) {
+      db.prepare(`DELETE FROM ${t} WHERE campaign_id = ?`).run(campaignId);
+    }
+    db.prepare('DELETE FROM campaigns WHERE id = ?').run(campaignId);
+  })();
+
+  res.json({ ok: true });
+});
+
 // POST /wipe — tout supprimer et recreer le schema (admin seulement)
 router.post('/wipe', (req, res) => {
   if (req.user.role !== 'admin') {

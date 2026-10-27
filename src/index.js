@@ -46,6 +46,8 @@ app.use(cors({
     callback(null, true);
   },
   credentials: true,
+  // Nom du fichier de l'archive, lu par le front (telechargement en blob).
+  exposedHeaders: ['Content-Disposition'],
 }));
 app.use(express.json());
 app.use(cookieParser());

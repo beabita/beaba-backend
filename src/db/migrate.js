@@ -254,6 +254,13 @@ function runMigration(database) {
     database.exec("ALTER TABLE users ADD COLUMN can_pair INTEGER NOT NULL DEFAULT 0");
   }
 
+  // Date du dernier telechargement complet de l'archive : condition pour
+  // effacer la campagne et en demarrer une nouvelle.
+  const campaignCols = database.prepare("PRAGMA table_info(campaigns)").all();
+  if (!campaignCols.some((c) => c.name === 'archived_at')) {
+    database.exec("ALTER TABLE campaigns ADD COLUMN archived_at TEXT");
+  }
+
   // Seed admin user
   database.prepare(`
     INSERT OR IGNORE INTO users (id, email, name, role) VALUES ('admin-001', 'benoit@450ppm.be', 'Benoit', 'admin')

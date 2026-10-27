@@ -134,6 +134,9 @@ router.get('/:campaignId/csv', (req, res) => {
   if (!campaign) {
     return res.status(404).json({ error: 'Campagne introuvable' });
   }
+  if (req.user.role !== 'admin' && campaign.user_id !== req.user.id) {
+    return res.status(403).json({ error: 'Acces interdit' });
+  }
 
   const household = (campaign.household || '').replace(/[^a-zA-Z0-9_-]/g, '_');
   const date = new Date().toISOString().slice(0, 10);
@@ -143,9 +146,19 @@ router.get('/:campaignId/csv', (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
   const archive = archiver('zip', { zlib: { level: 6 } });
+  let failed = false;
   archive.on('error', err => {
+    failed = true;
     console.error('[Export] Erreur archive :', err.message);
     if (!res.headersSent) res.status(500).end();
+    else res.destroy(err);
+  });
+
+  // Archive entierement envoyee : la campagne peut etre effacee
+  // (DELETE /api/campaign/:id exige archived_at >= completed_at).
+  res.on('finish', () => {
+    if (failed) return;
+    db.prepare("UPDATE campaigns SET archived_at = datetime('now') WHERE id = ?").run(campaignId);
   });
   archive.pipe(res);
 
