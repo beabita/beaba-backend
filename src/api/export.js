@@ -145,6 +145,15 @@ router.get('/:campaignId/csv', (req, res) => {
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
+  // Le ZIP est streame (pas de Content-Length) : taille estimee pour la
+  // barre de progression du front, ~8 octets compresses par releve.
+  const { n } = db.prepare(`
+    SELECT (SELECT COUNT(*) FROM readings_temp  WHERE campaign_id = ?)
+         + (SELECT COUNT(*) FROM readings_power WHERE campaign_id = ?)
+         + (SELECT COUNT(*) FROM readings_co2   WHERE campaign_id = ?) AS n
+  `).get(campaignId, campaignId, campaignId);
+  res.setHeader('X-Archive-Estimate', String(20000 + n * 8));
+
   const archive = archiver('zip', { zlib: { level: 6 } });
   let failed = false;
   archive.on('error', err => {
