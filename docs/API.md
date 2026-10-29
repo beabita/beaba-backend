@@ -18,11 +18,18 @@ Envoie un magic link par mail.
 
 ### `GET /auth/verify?token=<token>`
 
-Endpoint cible du magic link. Si le token est valide :
-- pose le cookie `beaba_token` (httpOnly, sameSite, secure)
-- redirige vers `FRONTEND_URL/app`
+Endpoint cible du magic link. Avec `FRONTEND_URL` (front séparé), ne consomme
+pas le token : redirige vers `FRONTEND_URL/login/verify?token=<token>`, où le
+conseiller clique pour se connecter (les antivirus de messagerie qui ouvrent
+le lien ne le grillent plus). Sans `FRONTEND_URL`, pose le cookie et redirige
+vers `/app`. Token absent, perimé ou déjà utilisé : redirige vers
+`/login?error=expired`.
 
-Sinon : 400.
+### `POST /auth/verify`
+
+**Body** : `{ "token": "<token>" }`. Consomme le token, pose le cookie
+`beaba_token` (httpOnly, sameSite, secure). Réponse `{ "ok": true }`, ou 401
+si le token est perimé ou déjà utilisé.
 
 ### `POST /auth/logout`
 

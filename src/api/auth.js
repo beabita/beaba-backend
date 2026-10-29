@@ -39,10 +39,10 @@ router.post('/login', async (req, res) => {
   res.json({ ok: true, message: 'Lien envoye' });
 });
 
-// GET /verify — verifier le token et creer la session
-router.get('/verify', (req, res) => {
-  const { token } = req.query;
-  if (!token) return res.redirect('/login?error=expired');
+// Consomme un token de magic link et pose le cookie de session.
+// Renvoie false si le token est inconnu, deja utilise ou perime.
+function consumeToken(token, res) {
+  if (!token) return false;
 
   const db = getDb();
   const row = db.prepare(`
@@ -52,7 +52,7 @@ router.get('/verify', (req, res) => {
     WHERE at.token = ? AND at.used = 0 AND at.expires_at > datetime('now') AND u.active = 1
   `).get(token);
 
-  if (!row) return res.redirect('/login?error=expired');
+  if (!row) return false;
 
   db.prepare('UPDATE auth_tokens SET used = 1 WHERE token = ?').run(token);
 
@@ -72,9 +72,32 @@ router.get('/verify', (req, res) => {
     cookieOpts.sameSite = 'lax';
   }
   res.cookie('beaba_token', jwt, cookieOpts);
+  return true;
+}
 
+// GET /verify — lien recu par email.
+// Avec un front separe (FRONTEND_URL), on ne consomme PAS le token ici : les
+// antivirus de messagerie (Safe Links...) ouvrent le lien avant le conseiller
+// et le grillaient. Le front le consomme via POST /verify apres un clic.
+router.get('/verify', (req, res) => {
   const frontendUrl = process.env.FRONTEND_URL || '';
-  res.redirect(`${frontendUrl}/app`);
+  const { token } = req.query;
+  if (!token) return res.redirect(`${frontendUrl}/login?error=expired`);
+
+  if (frontendUrl) {
+    return res.redirect(`${frontendUrl}/login/verify?token=${encodeURIComponent(token)}`);
+  }
+
+  if (!consumeToken(token, res)) return res.redirect('/login?error=expired');
+  res.redirect('/app');
+});
+
+// POST /verify — consommer le token depuis le front
+router.post('/verify', (req, res) => {
+  if (!consumeToken(req.body?.token, res)) {
+    return res.status(401).json({ error: 'Ce lien de connexion a expiré ou a déjà été utilisé.' });
+  }
+  res.json({ ok: true });
 });
 
 // POST /logout — supprimer le cookie

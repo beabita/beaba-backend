@@ -53,13 +53,6 @@ app.use(express.json());
 app.use(cookieParser());
 app.use('/api', routes);
 
-// ── Frontend statique ────────────────────────────────────────────────
-const publicDir = path.join(__dirname, '..', 'public');
-app.use(express.static(publicDir));
-app.get(/^\/(?!api\/).*/, (req, res) => {
-  res.sendFile(path.join(publicDir, 'index.html'));
-});
-
 app.get('/health', (req, res) => {
   const campaign = getActiveCampaign();
   res.json({
@@ -73,6 +66,23 @@ app.get('/health', (req, res) => {
     ts: new Date().toISOString(),
   });
 });
+
+// ── Frontend ─────────────────────────────────────────────────────────
+// En architecture split (FRONTEND_URL), le front vit sur Cloudflare Pages :
+// toute page demandee au domaine de l'API y est renvoyee, plutot que de
+// servir la copie de public/ (figee, desynchronisee de l'API).
+const frontendUrl = process.env.FRONTEND_URL;
+if (frontendUrl) {
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.redirect(`${frontendUrl}${req.originalUrl}`);
+  });
+} else {
+  const publicDir = path.join(__dirname, '..', 'public');
+  app.use(express.static(publicDir));
+  app.get(/^\/(?!api\/).*/, (req, res) => {
+    res.sendFile(path.join(publicDir, 'index.html'));
+  });
+}
 
 // ── Demarrage des services ────────────────────────────────────────────
 
